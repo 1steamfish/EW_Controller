@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ElectroChem Station — 电化学工作站上位机</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="ambient"></div>
+  <div class="grid-overlay"></div>
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <span class="logo-text">ElectroChem<em>Station</em></span>
+      </div>
+      <div class="protocol-badge">ECP v1.0</div>
+    </div>
+    <div class="topbar-center">
+      <div class="status-strip">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">未连接</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button class="btn btn-ghost" id="btnConnect" onclick="openConnectModal()">连接设备</button>
+      <button class="btn btn-danger hidden" id="btnDisconnect" onclick="disconnectDevice()">断开连接</button>
+    </div>
+  </header>
+
+  <!-- Workspace -->
+  <main class="workspace">
+
+    <!-- LEFT: Config panel -->
+    <aside class="panel panel-left">
+
+      <!-- Channel config -->
+      <section class="card" id="channelCard">
+        <div class="card-header">
+          <span class="card-icon">⚙</span>
+          <h2>通道配置</h2>
+        </div>
+        <div class="card-body">
+          <div class="field-group">
+            <label>测量类型</label>
+            <div class="segmented">
+              <button class="seg-btn active" onclick="selectMeasureType('current',this)">电流 (I)</button>
+              <button class="seg-btn" onclick="selectMeasureType('voltage',this)">电压 (V)</button>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label>量程模式</label>
+            <div class="segmented">
+              <button class="seg-btn active" onclick="selectRangeMode('manual',this)">手动</button>
+              <button class="seg-btn" onclick="selectRangeMode('auto',this)">自动</button>
+            </div>
+          </div>
+
+          <div class="field-group" id="manualRangeGroup">
+            <label>量程选择</label>
+            <select class="select" id="rangeSelect" onchange="onRangeChange()"></select>
+          </div>
+
+          <div class="field-group">
+            <label>采样率 (SPS)</label>
+            <select class="select" id="sampleRateSelect">
+              <option value="10">10 SPS</option>
+              <option value="100" selected>100 SPS</option>
+              <option value="1000">1000 SPS</option>
+              <option value="8000">8000 SPS</option>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <label>通道编号</label>
+            <select class="select" id="channelSelect">
+              <option value="0">CH0</option>
+              <option value="1">CH1</option>
+              <option value="2">CH2</option>
+              <option value="3">CH3</option>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <label>偏置电压 (mV)</label>
+            <input class="input" type="number" id="biasVoltInput" value="0" step="10" />
+          </div>
+
+          <div class="device-info hidden" id="deviceInfoBlock">
+            <span>设备ID <em id="di-id">—</em></span>
+            <span>固件版本 <em id="di-fw">—</em></span>
+            <span>能力位 <em id="di-cap">—</em></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Method config -->
+      <section class="card">
+        <div class="card-header">
+          <span class="card-icon">🧪</span>
+          <h2>检测方法</h2>
+        </div>
+        <div class="card-body">
+          <div class="field-group">
+            <label>方法选择</label>
+            <select class="select" id="methodSelect" onchange="onMethodChange()">
+              <option value="CA">计时电流法 (CA)</option>
+              <option value="CV">循环伏安法 (CV)</option>
+              <option value="DPV">差分脉冲法 (DPV)</option>
+              <option value="SWV">方波伏安法 (SWV)</option>
+              <option value="POT">电位分析法 (POT)</option>
+            </select>
+          </div>
+
+          <!-- CA -->
+          <div class="method-params" id="params-CA">
+            <div class="param-grid">
+              <div class="field-group"><label>施加电位 (mV)</label><input class="input" type="number" id="ca-potential" value="500" /></div>
+              <div class="field-group"><label>采样时间 (s)</label><input class="input" type="number" id="ca-duration" value="60" /></div>
+              <div class="field-group"><label>静止时间 (s)</label><input class="input" type="number" id="ca-rest" value="5" /></div>
+              <div class="field-group"><label>采样间隔 (ms)</label><input class="input" type="number" id="ca-interval" value="100" /></div>
+            </div>
+          </div>
+
+          <!-- CV -->
+          <div class="method-params hidden" id="params-CV">
+            <div class="param-grid">
+              <div class="field-group"><label>起始电位 (mV)</label><input class="input" type="number" id="cv-start" value="-500" /></div>
+              <div class="field-group"><label>终止电位 (mV)</label><input class="input" type="number" id="cv-end" value="500" /></div>
+              <div class="field-group"><label>扫速 (mV/s)</label><input class="input" type="number" id="cv-scanrate" value="100" /></div>
+              <div class="field-group"><label>循环次数</label><input class="input" type="number" id="cv-cycles" value="3" /></div>
+            </div>
+          </div>
+
+          <!-- DPV -->
+          <div class="method-params hidden" id="params-DPV">
+            <div class="param-grid">
+              <div class="field-group"><label>起始电位 (mV)</label><input class="input" type="number" id="dpv-start" value="-500" /></div>
+              <div class="field-group"><label>终止电位 (mV)</label><input class="input" type="number" id="dpv-end" value="500" /></div>
+              <div class="field-group"><label>步进电位 (mV)</label><input class="input" type="number" id="dpv-step" value="5" /></div>
+              <div class="field-group"><label>脉冲幅度 (mV)</label><input class="input" type="number" id="dpv-pulse" value="50" /></div>
+              <div class="field-group"><label>脉冲宽度 (ms)</label><input class="input" type="number" id="dpv-pwidth" value="50" /></div>
+              <div class="field-group"><label>脉冲周期 (ms)</label><input class="input" type="number" id="dpv-period" value="100" /></div>
+            </div>
+          </div>
+
+          <!-- SWV -->
+          <div class="method-params hidden" id="params-SWV">
+            <div class="param-grid">
+              <div class="field-group"><label>起始电位 (mV)</label><input class="input" type="number" id="swv-start" value="-500" /></div>
+              <div class="field-group"><label>终止电位 (mV)</label><input class="input" type="number" id="swv-end" value="500" /></div>
+              <div class="field-group"><label>步进电位 (mV)</label><input class="input" type="number" id="swv-step" value="5" /></div>
+              <div class="field-group"><label>方波幅度 (mV)</label><input class="input" type="number" id="swv-amp" value="25" /></div>
+              <div class="field-group"><label>方波频率 (Hz)</label><input class="input" type="number" id="swv-freq" value="25" /></div>
+            </div>
+          </div>
+
+          <!-- POT -->
+          <div class="method-params hidden" id="params-POT">
+            <div class="param-grid">
+              <div class="field-group"><label>测量时间 (s)</label><input class="input" type="number" id="pot-duration" value="120" /></div>
+              <div class="field-group"><label>采样间隔 (ms)</label><input class="input" type="number" id="pot-interval" value="500" /></div>
+            </div>
+          </div>
+
+          <div class="action-row">
+            <button class="btn btn-primary" id="btnStart" onclick="startMeasurement()">▶ 开始测量</button>
+            <button class="btn btn-stop hidden" id="btnStop" onclick="stopMeasurement()">■ 停止</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- CENTER: Chart + Log -->
+    <div class="panel panel-center">
+      <section class="card chart-card">
+        <div class="card-header">
+          <span class="card-icon">📈</span>
+          <h2 id="chartTitle">实时数据 — 计时电流法 (CA)</h2>
+          <div class="chart-actions">
+            <button class="btn btn-ghost btn-sm" onclick="clearChart()">清空</button>
+            <button class="btn btn-ghost btn-sm" onclick="exportCSV()">导出 CSV</button>
+            <button class="btn btn-ghost btn-sm" onclick="exportPNG()">导出图像</button>
+          </div>
+        </div>
+        <div class="chart-container">
+          <canvas id="mainChart"></canvas>
+        </div>
+        <div class="chart-footer">
+          <div class="live-values">
+            <div class="live-val"><span class="live-label" id="xLabel">时间 (s)</span><span class="live-num" id="xVal">—</span></div>
+            <div class="live-val"><span class="live-label" id="yLabel">电流</span><span class="live-num" id="yVal">—</span></div>
+            <div class="live-val"><span class="live-label">采样点</span><span class="live-num" id="pointsVal">0</span></div>
+            <div class="live-val"><span class="live-label">峰值</span><span class="live-num" id="peakVal">—</span></div>
+          </div>
+          <div class="progress-bar-wrap"><div class="progress-bar" id="progressBar"></div></div>
+        </div>
+      </section>
+
+      <section class="card log-card">
+        <div class="card-header">
+          <span class="card-icon">📋</span>
+          <h2>通信日志</h2>
+          <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="clearLog()">清空</button>
+        </div>
+        <div class="log-body" id="logBody"></div>
+      </section>
+    </div>
+
+    <!-- RIGHT: Data table -->
+    <aside class="panel panel-right">
+      <section class="card" style="height:100%;display:flex;flex-direction:column">
+        <div class="card-header">
+          <span class="card-icon">📊</span>
+          <h2>数据记录</h2>
+          <span class="badge" id="dataBadge">0</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th id="th-x">时间 (s)</th><th id="th-y">数值</th></tr></thead>
+            <tbody id="dataTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <!-- Connect Modal -->
+  <div class="modal-overlay hidden" id="connectModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>连接电化学工作站</h3>
+        <button class="modal-close" onclick="closeConnectModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="connect-tabs">
+          <button class="ctab active" onclick="switchConnTab('serial',this)">🔌 串口连接</button>
+          <button class="ctab" onclick="switchConnTab('bluetooth',this)">📶 蓝牙连接</button>
+        </div>
+
+        <div class="ctab-content" id="tab-serial">
+          <div class="field-group">
+            <label>波特率</label>
+            <select class="select" id="baudRate">
+              <option value="9600">9600</option>
+              <option value="19200">19200</option>
+              <option value="38400">38400</option>
+              <option value="57600">57600</option>
+              <option value="115200" selected>115200</option>
+              <option value="230400">230400</option>
+            </select>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+            <div class="field-group">
+              <label>数据位</label>
+              <select class="select" id="dataBits"><option value="7">7</option><option value="8" selected>8</option></select>
+            </div>
+            <div class="field-group">
+              <label>停止位</label>
+              <select class="select" id="stopBits"><option value="1" selected>1</option><option value="2">2</option></select>
+            </div>
+            <div class="field-group">
+              <label>奇偶校验</label>
+              <select class="select" id="parity"><option value="none" selected>无</option><option value="even">偶</option><option value="odd">奇</option></select>
+            </div>
+          </div>
+          <button class="btn btn-primary w-full" onclick="connectSerial()">🔌 连接串口</button>
+        </div>
+
+        <div class="ctab-content hidden" id="tab-bluetooth">
+          <div class="bt-info">
+            <p>使用 Web Bluetooth API 连接电化学工作站。</p>
+            <p class="text-muted">请确保浏览器已启用蓝牙，且设备处于配对模式。</p>
+          </div>
+          <div class="field-group">
+            <label>服务 UUID（可选）</label>
+            <input class="input" type="text" id="btServiceUUID" placeholder="留空使用默认 UUID" />
+          </div>
+          <button class="btn btn-primary w-full" onclick="connectBluetooth()">📶 扫描并连接</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="protocol.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

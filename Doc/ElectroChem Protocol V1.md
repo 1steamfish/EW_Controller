@@ -32,6 +32,7 @@
 ### 3.1 UART 承载
 
 UART 是字节流，必须分帧。使用COBS编码+帧尾0x00分帧
+
 * 发送：`COBS(原始Frame)` + 末尾分隔符 `0x00`
 * 接受：以`0x00`切分包，然后`COBS解码`得到原始Frame
 
@@ -40,10 +41,12 @@ UART 是字节流，必须分帧。使用COBS编码+帧尾0x00分帧
 ### 3.2 BLE 承载（GATT）
 
 建议定义自有 Service（128-bit UUID）与两个特征：
+
 * ECP_RX：Write Without Response（Host → Device）
 * ECP_TX：Notify（Device → Host）
 
 BLE 每次 write/notify 有 MTU 限制：
+
 * 控制帧建议保持 < 200 bytes
 * 数据帧按 MTU 自适应样本批量
 * 若必须超过 MTU：使用 分片机制（Flags.FRAG=1）
@@ -51,6 +54,7 @@ BLE 每次 write/notify 有 MTU 限制：
 ## 4. Frame 结构
 
 ### 4.1 Frame 总体结构
+
 ```css
 [Header][Optional Fragment Header][Payload][FrameCrc32]
 ```
