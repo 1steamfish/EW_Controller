@@ -88,6 +88,10 @@ const ECP = {
 
   HEADER_LEN: 17,
   MAX_PAYLOAD_LEN: 4096,
+
+  // Temporary compatibility switches: allow communication with firmware that does not implement CRC yet.
+  CRC_VERIFY: true,
+  ALLOW_FRAME_WITHOUT_CRC32: true,
 };
 
 // ─── CRC-16/CCITT-FALSE ──────────────────────────────────────────────────────
@@ -256,13 +260,13 @@ function buildUARTFrame(opts) {
 
 // ─── Frame Parser ────────────────────────────────────────────────────────────
 function parseFrame(raw) {
-  if (raw.length < ECP.HEADER_LEN + 4) return null;
+  if (raw.length < ECP.HEADER_LEN) return null;
   if (raw[0] !== ECP.MAGIC0 || raw[1] !== ECP.MAGIC1) return null;
 
   const hdv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const hcrcCalc = crc16_ccitt(raw, 0, 15);
   const hcrcRecv = hdv.getUint16(15, true);
-  if (hcrcCalc !== hcrcRecv) return null;
+  if (ECP.CRC_VERIFY && hcrcCalc !== hcrcRecv) return null;
 
   const verMajor   = raw[2];
   const verMinor   = raw[3];
@@ -279,12 +283,19 @@ function parseFrame(raw) {
   if (payloadLen > ECP.MAX_PAYLOAD_LEN) return null;
 
   const fragHeaderLen = (flags & ECP.FLAG_FRAG) ? 4 : 0;
-  const totalExpected = ECP.HEADER_LEN + fragHeaderLen + payloadLen + 4;
-  if (raw.length < totalExpected) return null;
+  const bodyLenNoCrc = ECP.HEADER_LEN + fragHeaderLen + payloadLen;
+  const bodyLenWithCrc = bodyLenNoCrc + 4;
+  if (raw.length < bodyLenNoCrc) return null;
 
-  const fcrcCalc = crc32_iso_hdlc(raw, 0, ECP.HEADER_LEN + fragHeaderLen + payloadLen);
-  const fcrcRecv = hdv.getUint32(ECP.HEADER_LEN + fragHeaderLen + payloadLen, true);
-  if (fcrcCalc !== fcrcRecv) return null;
+  const hasFrameCrc32 = raw.length >= bodyLenWithCrc;
+  if (ECP.CRC_VERIFY) {
+    if (!hasFrameCrc32) return null;
+    const fcrcCalc = crc32_iso_hdlc(raw, 0, bodyLenNoCrc);
+    const fcrcRecv = hdv.getUint32(bodyLenNoCrc, true);
+    if (fcrcCalc !== fcrcRecv) return null;
+  } else if (!hasFrameCrc32 && !ECP.ALLOW_FRAME_WITHOUT_CRC32) {
+    return null;
+  }
 
   let payloadOffset = ECP.HEADER_LEN;
   let fragInfo = null;

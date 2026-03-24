@@ -4,6 +4,19 @@ const CURRENT_RANGES=[{label:'10 nA',rtia:10000000},{label:'100 nA',rtia:1000000
 const VOLTAGE_RANGES=[{label:'+/-100 mV'},{label:'+/-500 mV'},{label:'+/-1 V'},{label:'+/-2 V'}];
 const METHOD_META={CA:{name:'CA',modeId:ECP.MODE_CA,xLabel:'Time(s)',yLabel:'Current'},CV:{name:'CV',modeId:ECP.MODE_CV,xLabel:'Potential(mV)',yLabel:'Current'},DPV:{name:'DPV',modeId:ECP.MODE_DPV,xLabel:'Potential(mV)',yLabel:'Current'},SWV:{name:'SWV',modeId:ECP.MODE_SWV,xLabel:'Potential(mV)',yLabel:'Current'},POT:{name:'POT',modeId:ECP.MODE_POT,xLabel:'Time(s)',yLabel:'Potential(mV)'}};
 const METHOD_CN={CA:'?????',CV:'?????',DPV:'?????',SWV:'?????',POT:'?????'};
+const RSP_BY_REQ={
+  [ECP.MSG_HELLO_REQ]:ECP.MSG_HELLO_RSP,
+  [ECP.MSG_PING]:ECP.MSG_PONG,
+  [ECP.MSG_TIME_SYNC_REQ]:ECP.MSG_TIME_SYNC_RSP,
+  [ECP.MSG_SET_DAC_REQ]:ECP.MSG_SET_DAC_RSP,
+  [ECP.MSG_CFG_CH_REQ]:ECP.MSG_CFG_CH_RSP,
+  [ECP.MSG_GET_CFG_REQ]:ECP.MSG_GET_CFG_RSP,
+  [ECP.MSG_START_MEAS_REQ]:ECP.MSG_START_MEAS_RSP,
+  [ECP.MSG_STOP_MEAS_REQ]:ECP.MSG_STOP_MEAS_RSP,
+  [ECP.MSG_GET_STATUS_REQ]:ECP.MSG_GET_STATUS_RSP,
+  [ECP.MSG_DATA_PULL_REQ]:ECP.MSG_DATA_PULL_RSP,
+  [ECP.MSG_STATS_REQ]:ECP.MSG_STATS_RSP,
+};
 let mainChart;
 function initChart(){
   const ctx=document.getElementById('mainChart').getContext('2d');
@@ -163,20 +176,21 @@ async function sendBytes(bytes){
 function getAckTimeoutMs(){
   return state.connType==='serial'?250:400;
 }
-function armAckWait(msgId,timeoutMs){
+function armAckWait(msgId,timeoutMs,expectedRspType){
   return new Promise(function(resolve,reject){
     var timer=setTimeout(function(){
       if(state.pendingAcks[msgId])delete state.pendingAcks[msgId];
       reject(new Error('ACK timeout'));},timeoutMs);
-    state.pendingAcks[msgId]={timer:timer,resolve:resolve,reject:reject};
+    state.pendingAcks[msgId]={timer:timer,resolve:resolve,reject:reject,expectedRspType:expectedRspType};
   });
 }
 async function sendRequestWithAck(baseOpts,uart,retryCount,timeoutMs){
   var attempts=Math.max(1,retryCount||3);
   var msgId=(baseOpts.msgId!==undefined)?baseOpts.msgId:nextMsgId();
+  var expectedRspType=RSP_BY_REQ[baseOpts.msgType];
   for(var attempt=1;attempt<=attempts;attempt++){
     var opts=Object.assign({},baseOpts,{flags:(baseOpts.flags||0)|ECP.FLAG_ACK_REQ,msgId:msgId});
-    var ackP=armAckWait(msgId,timeoutMs||getAckTimeoutMs());
+    var ackP=armAckWait(msgId,timeoutMs||getAckTimeoutMs(),expectedRspType);
     try{
       await sendBytes(uart?buildUARTFrame(opts):buildFrame(opts));
       var ack=await ackP;
@@ -192,13 +206,23 @@ async function sendRequestWithAck(baseOpts,uart,retryCount,timeoutMs){
 }
 function onFrameReceived(frame){
   var flags=frame.flags,msgType=frame.msgType,msgId=frame.msgId,payload=frame.payload;
-  if(flags&ECP.FLAG_ACK){
-    var p=state.pendingAcks[msgId];
-    if(p){
-      clearTimeout(p.timer);delete state.pendingAcks[msgId];
-      if(flags&ECP.FLAG_IS_ERR)p.reject(new Error('Dev err: '+resultString(parseTLV(payload,0,payload.length).resultCode||0)));
-      else p.resolve(parseTLV(payload,0,payload.length));
+  var tlvPayload=parseTLV(payload,0,payload.length);
+  // Compatibility: some firmware sends *_RSP without FLAG_ACK. Accept matching response type as ACK completion.
+  var p=state.pendingAcks[msgId];
+  if(!p&&(msgType>=0x0002)&&(msgType&0x0001)===0){
+    var keys=Object.keys(state.pendingAcks);
+    for(var i=0;i<keys.length;i++){
+      var k=keys[i],cand=state.pendingAcks[k];
+      if(cand&&cand.expectedRspType===msgType){p=cand;msgId=Number(k);break;}
     }
+  }
+  if(p&&((flags&ECP.FLAG_ACK)||p.expectedRspType===msgType)){
+    clearTimeout(p.timer);delete state.pendingAcks[msgId];
+    if(flags&ECP.FLAG_IS_ERR)p.reject(new Error('Dev err: '+resultString(tlvPayload.resultCode||0)));
+    else p.resolve(tlvPayload);
+  }
+  if(flags&ECP.FLAG_ACK){
+    // already handled above
   }
   if(msgType===ECP.MSG_DATA_FRAME){
     var df=parseDataFrame(payload);if(!df)return;
@@ -206,12 +230,12 @@ function onFrameReceived(frame){
     processSamples(df);return;
   }
   if(msgType===ECP.MSG_EVENT){
-    var tlv=parseTLV(payload,0,payload.length);
+    var tlv=tlvPayload;
     var msg=tlv.resultMsg||resultString(tlv.resultCode||0);
     log('err','EVENT: '+msg);showToast('Event: '+msg,'warning');return;
   }
   if(msgType===ECP.MSG_HELLO_RSP){
-    var tlv2=parseTLV(payload,0,payload.length);
+    var tlv2=tlvPayload;
     state.deviceInfo=tlv2;updateDeviceInfo(tlv2);
     log('rx','HELLO_RSP dev='+(tlv2.deviceId||'?'));return;
   }
