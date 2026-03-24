@@ -178,6 +178,36 @@ class TLVBuilder {
 
 // ─── TLV Parser ─────────────────────────────────────────────────────────────
 function parseTLV(buf, offset, end) {
+  function bytesToHex(val) {
+    let s = '';
+    for (let k = 0; k < val.length; k++) s += val[k].toString(16).padStart(2, '0');
+    return s;
+  }
+  function decodeAdaptiveTextOrHex(val) {
+    if (val.length === 0) return '';
+    let printable = true;
+    for (let k = 0; k < val.length; k++) {
+      const b = val[k];
+      if (b === 0) continue;
+      if (b < 0x20 || b > 0x7E) { printable = false; break; }
+    }
+    if (printable) {
+      let endIdx = val.length;
+      while (endIdx > 0 && val[endIdx - 1] === 0) endIdx--;
+      if (endIdx > 0) return new TextDecoder().decode(val.slice(0, endIdx));
+    }
+    // For common scalar fields encoded in little-endian, print canonical numeric hex.
+    if (val.length === 2) {
+      const n16 = new DataView(val.buffer, val.byteOffset, 2).getUint16(0, true);
+      return `0x${n16.toString(16).padStart(4, '0')}`;
+    }
+    if (val.length === 4) {
+      const n32 = new DataView(val.buffer, val.byteOffset, 4).getUint32(0, true);
+      return `0x${n32.toString(16).padStart(8, '0')}`;
+    }
+    return `0x${bytesToHex(val)}`;
+  }
+
   const result = {};
   let i = offset;
   while (i + 3 <= end) {
@@ -188,8 +218,8 @@ function parseTLV(buf, offset, end) {
     const val = buf.slice(i, i + len);
     const dv  = new DataView(val.buffer, val.byteOffset, val.byteLength);
     switch (type) {
-      case ECP.TLV_DEVICE_ID:    result.deviceId   = new TextDecoder().decode(val); break;
-      case ECP.TLV_FW_VERSION:   result.fwVersion  = new TextDecoder().decode(val); break;
+      case ECP.TLV_DEVICE_ID:    result.deviceId   = decodeAdaptiveTextOrHex(val); break;
+      case ECP.TLV_FW_VERSION:   result.fwVersion  = decodeAdaptiveTextOrHex(val); break;
       case ECP.TLV_CAP_BITS:     result.capBits    = dv.getUint32(0, true); break;
       case ECP.TLV_MAX_PAYLOAD:  result.maxPayload = dv.getUint16(0, true); break;
       case ECP.TLV_RESULT_CODE:  result.resultCode = dv.getUint16(0, true); break;
