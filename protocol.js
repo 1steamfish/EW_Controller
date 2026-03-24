@@ -87,6 +87,7 @@ const ECP = {
   RC_HW_FAULT:        0x0103,
 
   HEADER_LEN: 17,
+  MAX_PAYLOAD_LEN: 4096,
 };
 
 // ─── CRC-16/CCITT-FALSE ──────────────────────────────────────────────────────
@@ -273,23 +274,29 @@ function parseFrame(raw) {
   const seq        = hdv.getUint16(11, true);
   const payloadLen = hdv.getUint16(13, true);
 
-  const totalExpected = ECP.HEADER_LEN + payloadLen + 4;
+  if (verMajor !== ECP.VER_MAJOR) return null;
+  if (dst !== ECP.HOST_ID && dst !== ECP.BROADCAST) return null;
+  if (payloadLen > ECP.MAX_PAYLOAD_LEN) return null;
+
+  const fragHeaderLen = (flags & ECP.FLAG_FRAG) ? 4 : 0;
+  const totalExpected = ECP.HEADER_LEN + fragHeaderLen + payloadLen + 4;
   if (raw.length < totalExpected) return null;
 
-  const fcrcCalc = crc32_iso_hdlc(raw, 0, ECP.HEADER_LEN + payloadLen);
-  const fcrcRecv = hdv.getUint32(ECP.HEADER_LEN + payloadLen, true);
+  const fcrcCalc = crc32_iso_hdlc(raw, 0, ECP.HEADER_LEN + fragHeaderLen + payloadLen);
+  const fcrcRecv = hdv.getUint32(ECP.HEADER_LEN + fragHeaderLen + payloadLen, true);
   if (fcrcCalc !== fcrcRecv) return null;
 
   let payloadOffset = ECP.HEADER_LEN;
   let fragInfo = null;
   if (flags & ECP.FLAG_FRAG) {
-    if (raw.length < ECP.HEADER_LEN + 4 + 4) return null;
     const fdv = new DataView(raw.buffer, raw.byteOffset + ECP.HEADER_LEN, 4);
     fragInfo = { fragId: fdv.getUint16(0, true), fragIdx: raw[ECP.HEADER_LEN + 2], fragCnt: raw[ECP.HEADER_LEN + 3] };
     payloadOffset += 4;
+    if (fragInfo.fragCnt === 0 || fragInfo.fragIdx >= fragInfo.fragCnt) return null;
   }
 
-  const payload = raw.slice(payloadOffset, ECP.HEADER_LEN + payloadLen);
+  const payloadEnd = payloadOffset + payloadLen;
+  const payload = raw.slice(payloadOffset, payloadEnd);
   return { verMajor, verMinor, flags, src, dst, msgType, msgId, seq, payload, fragInfo };
 }
 

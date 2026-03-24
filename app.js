@@ -160,6 +160,36 @@ async function sendBytes(bytes){
   if(state.connType==='serial'&&state.serialWriter)await state.serialWriter.write(bytes);
   else if(state.connType==='bluetooth'&&state.btTxChar)await state.btTxChar.writeValueWithoutResponse(bytes.buffer);
 }
+function getAckTimeoutMs(){
+  return state.connType==='serial'?250:400;
+}
+function armAckWait(msgId,timeoutMs){
+  return new Promise(function(resolve,reject){
+    var timer=setTimeout(function(){
+      if(state.pendingAcks[msgId])delete state.pendingAcks[msgId];
+      reject(new Error('ACK timeout'));},timeoutMs);
+    state.pendingAcks[msgId]={timer:timer,resolve:resolve,reject:reject};
+  });
+}
+async function sendRequestWithAck(baseOpts,uart,retryCount,timeoutMs){
+  var attempts=Math.max(1,retryCount||3);
+  var msgId=(baseOpts.msgId!==undefined)?baseOpts.msgId:nextMsgId();
+  for(var attempt=1;attempt<=attempts;attempt++){
+    var opts=Object.assign({},baseOpts,{flags:(baseOpts.flags||0)|ECP.FLAG_ACK_REQ,msgId:msgId});
+    var ackP=armAckWait(msgId,timeoutMs||getAckTimeoutMs());
+    try{
+      await sendBytes(uart?buildUARTFrame(opts):buildFrame(opts));
+      var ack=await ackP;
+      if(ack&&ack.resultCode!==undefined&&ack.resultCode!==ECP.RC_OK)throw new Error('Dev err: '+resultString(ack.resultCode));
+      return ack;
+    }catch(e){
+      var p=state.pendingAcks[msgId];
+      if(p){clearTimeout(p.timer);delete state.pendingAcks[msgId];}
+      if(attempt===attempts)throw e;
+      log('err','Retry '+attempt+'/'+attempts+' msg=0x'+opts.msgType.toString(16).padStart(4,'0')+' reason='+e.message);
+    }
+  }
+}
 function onFrameReceived(frame){
   var flags=frame.flags,msgType=frame.msgType,msgId=frame.msgId,payload=frame.payload;
   if(flags&ECP.FLAG_ACK){
@@ -204,10 +234,10 @@ function processSamples(df){
 }
 async function doHandshake(uart){
   log('tx','HELLO_REQ');
+  showToast('Handshaking...','info');
   var payload=new TLVBuilder().u16(ECP.TLV_MAX_PAYLOAD,512).build();
   var opts={flags:ECP.FLAG_ACK_REQ,msgType:ECP.MSG_HELLO_REQ,payload:payload};
-  await sendBytes(uart?buildUARTFrame(opts):buildFrame(opts));
-  showToast('Handshaking...','info');
+  await sendRequestWithAck(opts,uart,3,getAckTimeoutMs());
 }
 function updateDeviceInfo(tlv){
   document.getElementById('deviceInfoBlock').classList.remove('hidden');
@@ -259,7 +289,7 @@ async function _startReal(){
   var cb=new TLVBuilder().u8(ECP.TLV_CHANNEL_ID,ch).u8(ECP.TLV_MODE_ID,meta.modeId).u32(ECP.TLV_ADC_RATE_SPS,sps).f32(ECP.TLV_BIAS_VOLT_F32,biasV);
   if(state.rangeMode==='manual'&&state.rangeValue&&state.rangeValue.rtia)cb.u32(ECP.TLV_RTIA_OHM,state.rangeValue.rtia).u8(ECP.TLV_PGA_GAIN,1);
   var cfgOpts={flags:ECP.FLAG_ACK_REQ,msgType:ECP.MSG_CFG_CH_REQ,payload:cb.build()};
-  await sendBytes(uart?buildUARTFrame(cfgOpts):buildFrame(cfgOpts));
+  await sendRequestWithAck(cfgOpts,uart,3,getAckTimeoutMs());
   log('tx','CFG_CHANNEL ch='+ch+' mode='+state.method+' sps='+sps);
   var durationMs=0;
   if(state.method==='CA')durationMs=parseInt(document.getElementById('ca-duration').value)*1000;
@@ -268,7 +298,7 @@ async function _startReal(){
   var sb=new TLVBuilder().u8(ECP.TLV_CHANNEL_ID,ch).u8(ECP.TLV_STREAM_ID,1).u16(ECP.TLV_SIGNAL_ID,0x00FF);
   if(durationMs>0)sb.u32(ECP.TLV_DURATION_MS,durationMs);
   var startOpts={flags:ECP.FLAG_ACK_REQ,msgType:ECP.MSG_START_MEAS_REQ,payload:sb.build()};
-  await sendBytes(uart?buildUARTFrame(startOpts):buildFrame(startOpts));
+  await sendRequestWithAck(startOpts,uart,3,getAckTimeoutMs());
   log('tx','START_MEAS ch='+ch+' dur='+durationMs+'ms');
   state.measuring=true;
   document.getElementById('btnStart').classList.add('hidden');
@@ -280,7 +310,7 @@ async function _stopReal(){
   var ch=parseInt(document.getElementById('channelSelect').value);
   var uart=state.connType==='serial';
   var opts={flags:ECP.FLAG_ACK_REQ,msgType:ECP.MSG_STOP_MEAS_REQ,payload:new TLVBuilder().u8(ECP.TLV_CHANNEL_ID,ch).build()};
-  await sendBytes(uart?buildUARTFrame(opts):buildFrame(opts));
+  await sendRequestWithAck(opts,uart,3,getAckTimeoutMs());
   log('tx','STOP_MEAS ch='+ch);
   state.measuring=false;
   document.getElementById('btnStart').classList.remove('hidden');
@@ -324,7 +354,8 @@ window.startMeasurement=async function(){
     log('info','Demo mode started');
     startDemo();return;
   }
-  await _startReal();
+  try{await _startReal();}
+  catch(e){log('err','START failed: '+e.message);showToast('Start failed: '+e.message,'error');}
 };
 window.stopMeasurement=async function(){
   if(!state.connected){
@@ -334,7 +365,8 @@ window.stopMeasurement=async function(){
     document.getElementById('progressBar').style.width='0%';
     setStatus('Disconnected','');showToast('Demo stopped','info');return;
   }
-  await _stopReal();
+  try{await _stopReal();}
+  catch(e){log('err','STOP failed: '+e.message);showToast('Stop failed: '+e.message,'error');}
 };
 document.addEventListener('DOMContentLoaded',function(){
   initChart();
